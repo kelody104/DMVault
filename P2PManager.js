@@ -1,179 +1,100 @@
 /**
- * WebRTC P2P 通信管理クラス
+ * WebRTC P2P 通信管理クラス (SkyWay SDK Core 版)
  */
 class P2PManager {
-    constructor(playerId) {
-        this.playerId = playerId;
-        this.roomId = null;
-        this.opponentId = null;
-        this.role = null; // 'host' or 'guest'
-        this.peerConnection = null;
-        this.dataChannel = null;
-        this.pollingInterval = null;
+    constructor(appId, token) {
+        this.appId = appId; // SkyWay App ID
+        this.token = token; // SkyWay Auth Token (本番ではサーバーで生成)
+        this.context = null;
+        this.room = null;
+        this.localDataStream = null;
+        this.dataConnections = new Set(); // 接続中のメンバーのデータストリーム
 
-        // WebRTC 設定 (Google の無料 STUN サーバーを利用)
-        this.config = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-        };
+        // コールバック関数
+        this.onConnected = () => { };
+        this.onDisconnected = () => { };
+        this.onMessageReceived = (data) => { };
     }
 
     /**
-     * マッチングを開始する
+     * SkyWay の初期化とルーム参加
+     * @param {string} roomName 
+     * @param {string} memberName 
      */
-    async startMatching() {
+    async joinRoom(roomName, memberName) {
         try {
-            const response = await fetch(`matching.php?action=wait&player_id=${this.playerId}`);
-            const result = await response.json();
+            // Context の作成
+            this.context = await SkyWayContext.Create(this.token);
 
-            if (!result.success) throw new Error(result.error);
+            // ルームの取得または作成 (P2P 形式)
+            this.room = await SkyWayRoom.FindOrCreate(this.context, {
+                type: 'p2p',
+                name: roomName
+            });
 
-            this.roomId = result.room_id;
-            this.role = result.role;
+            // ルームに参加
+            const member = await this.room.join({ name: memberName });
+            console.log(`Joined room: ${roomName} as ${memberName}`);
 
-            console.log(`Matching started. Room: ${this.roomId}, Role: ${this.role}`);
+            // 自分のデータストリームを作成してパブリッシュ
+            this.localDataStream = await SkyWayStreamFactory.createDataStream();
+            await member.publish(this.localDataStream);
 
-            if (this.role === 'host') {
-                this.waitForGuest();
-            } else {
-                this.opponentId = 'host'; // 簡易化のためホストのIDを特定
-                this.initWebRTC();
+            // すでにルームにいる、または後から来るメンバーのストリームを処理
+            this.room.onPublicationExposed.add(({ publication }) => {
+                if (publication.publisher.id !== member.id && publication.contentType === 'data') {
+                    this.subscribeStream(member, publication);
+                }
+            });
+
+            // 既存のパブリケーションをチェック
+            for (const publication of this.room.publications) {
+                if (publication.publisher.id !== member.id && publication.contentType === 'data') {
+                    this.subscribeStream(member, publication);
+                }
             }
 
-            this.startSignalingPolling();
+            this.onConnected();
         } catch (error) {
-            console.error('Matching failed:', error);
+            console.error('SkyWay connection failed:', error);
+            throw error;
         }
     }
 
     /**
-     * ホストとして参加者を待つ
+     * ストリームの購読（サブスクライブ）
      */
-    waitForGuest() {
-        const check = async () => {
-            const response = await fetch(`matching.php?action=check&player_id=${this.playerId}&room_id=${this.roomId}`);
-            const result = await response.json();
+    async subscribeStream(selfMember, publication) {
+        const { stream } = await selfMember.subscribe(publication.id);
+        console.log(`Subscribed to: ${publication.publisher.id}`);
 
-            if (result.status === 'matched') {
-                this.opponentId = result.guest_id;
-                console.log(`Opponent found: ${this.opponentId}`);
-                clearInterval(checkInterval);
-                this.initWebRTC();
-            }
-        };
-        const checkInterval = setInterval(check, 2000);
-    }
+        this.dataConnections.add(stream);
 
-    /**
-     * WebRTC の初期化
-     */
-    async initWebRTC() {
-        this.peerConnection = new RTCPeerConnection(this.config);
-
-        // ICE Candidate の発生時
-        this.peerConnection.onicecandidate = (event) => {
-            if (event.candidate) {
-                this.sendSignaling('candidate', event.candidate);
-            }
-        };
-
-        // データチャネルの受信 (Guest側)
-        this.peerConnection.ondatachannel = (event) => {
-            this.setupDataChannel(event.channel);
-        };
-
-        if (this.role === 'host') {
-            // ホスト側がデータチャネルを作成
-            const channel = this.peerConnection.createDataChannel('gameSync');
-            this.setupDataChannel(channel);
-
-            // Offer を作成
-            const offer = await this.peerConnection.createOffer();
-            await this.peerConnection.setLocalDescription(offer);
-            this.sendSignaling('offer', offer);
-        }
-    }
-
-    /**
-     * データチャネルのセットアップ
-     */
-    setupDataChannel(channel) {
-        this.dataChannel = channel;
-        this.dataChannel.onopen = () => console.log('DataChannel opened');
-        this.dataChannel.onmessage = (event) => this.onMessage(JSON.parse(event.data));
-        this.dataChannel.onclose = () => console.log('DataChannel closed');
-    }
-
-    /**
-     * シグナリングデータの送信
-     */
-    async sendSignaling(type, data) {
-        await fetch('signaling.php', {
-            method: 'POST',
-            body: JSON.stringify({
-                room_id: this.roomId,
-                from_id: this.playerId,
-                to_id: this.opponentId,
-                type: type,
-                data: data
-            })
+        // データ受信時の処理
+        stream.onData.add((data) => {
+            this.onMessageReceived(data);
         });
     }
 
     /**
-     * シグナリングのポーリング開始
-     */
-    startSignalingPolling() {
-        this.pollingInterval = setInterval(async () => {
-            const response = await fetch(`signaling.php?player_id=${this.playerId}`);
-            const result = await response.json();
-
-            if (result.success && result.messages) {
-                for (const msg of result.messages) {
-                    this.handleSignalingMessage(msg);
-                }
-            }
-        }, 2000);
-    }
-
-    /**
-     * 受信したシグナリングデータの処理
-     */
-    async handleSignalingMessage(msg) {
-        const data = JSON.parse(msg.data);
-
-        switch (msg.type) {
-            case 'offer':
-                await this.peerConnection.setRemoteDescription(new RTCSessionDescription(data));
-                const answer = await this.peerConnection.createAnswer();
-                await this.peerConnection.setLocalDescription(answer);
-                this.sendSignaling('answer', answer);
-                break;
-            case 'answer':
-                await this.peerConnection.setRemoteDescription(new RTCSessionDescription(data));
-                break;
-            case 'candidate':
-                await this.peerConnection.addIceCandidate(new RTCIceCandidate(data));
-                break;
-        }
-    }
-
-    /**
-     * データの送信
+     * データの送信 (全メンバーへ)
      */
     send(type, payload) {
-        if (this.dataChannel && this.dataChannel.readyState === 'open') {
-            this.dataChannel.send(JSON.stringify({ type, payload }));
+        if (this.localDataStream) {
+            const data = JSON.stringify({ type, payload });
+            this.localDataStream.write(data);
+            console.log('Message sent:', data);
         }
     }
 
     /**
-     * データ受信時の処理
+     * 切断
      */
-    onMessage(data) {
-        console.log('Message received:', data);
-        // ここでゲームアクションに応じた処理を行う
+    async leave() {
+        if (this.room) {
+            await this.room.leave();
+            this.room = null;
+            this.onDisconnected();
+        }
     }
 }
