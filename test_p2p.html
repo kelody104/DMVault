@@ -25,13 +25,12 @@
 </head>
 
 <body>
-    <h1>SkyWay P2P 通信テスト</h1>
+    <h1>SkyWay P2P 通信テスト (自動認証版)</h1>
 
     <div class="controls">
-        <label>Auth Token: <input type="password" id="authToken" placeholder="SkyWay Auth Token"></label><br>
         <label>Room Name: <input type="text" id="roomName" value="dmvault-room"></label>
         <label>Member Name: <input type="text" id="memberName" value="player1"></label>
-        <button id="startBtn">ルームに参加</button>
+        <button id="startBtn">接続して対戦開始</button>
     </div>
 
     <div id="log"></div>
@@ -52,7 +51,6 @@
         const sendBtn = document.getElementById('sendBtn');
         const msgInput = document.getElementById('msgInput');
 
-        const tokenInput = document.getElementById('authToken');
         const roomNameInput = document.getElementById('roomName');
         const memberNameInput = document.getElementById('memberName');
 
@@ -66,36 +64,40 @@
         }
 
         startBtn.onclick = async () => {
-            const token = tokenInput.value;
             const roomName = roomNameInput.value;
             const memberName = memberNameInput.value;
 
-            if (!token) {
-                alert('Auth Token を入力してください。');
-                return;
-            }
-
-            p2p = new P2PManager(null, token);
-
-            p2p.onConnected = () => {
-                addLog('SkyWay 接続完了。対戦相手を待っています...');
-                msgInput.disabled = false;
-                sendBtn.disabled = false;
-            };
-
-            p2p.onMessageReceived = (data) => {
-                addLog(`受信: ${data}`);
-            };
-
             try {
-                addLog('接続中...');
+                addLog('サーバーから認証トークンを取得中...');
+                const tokenResponse = await fetch(`get_token.php?roomName=${roomName}`);
+                const tokenData = await tokenResponse.json();
+
+                if (tokenData.error) {
+                    throw new Error(tokenData.error);
+                }
+
+                const token = tokenData.authToken;
+                p2p = new P2PManager(null, token);
+
+                p2p.onConnected = () => {
+                    addLog('SkyWay 接続完了！ P2P 通信が可能です。');
+                    msgInput.disabled = false;
+                    sendBtn.disabled = false;
+                };
+
+                p2p.onMessageReceived = (data) => {
+                    addLog(`受信: ${data}`);
+                };
+
+                addLog('SkyWay ルームに参加中...');
                 await p2p.joinRoom(roomName, memberName);
+
                 startBtn.disabled = true;
-                tokenInput.disabled = true;
                 roomNameInput.disabled = true;
                 memberNameInput.disabled = true;
             } catch (e) {
                 addLog(`エラー: ${e.message}`);
+                console.error(e);
             }
         };
 
