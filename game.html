@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DMVault Duel - Game</title>
+    <style>
+        :root {
+            --zone-bg: rgba(255, 255, 255, 0.1);
+            --zone-border: rgba(255, 255, 255, 0.2);
+            --card-width: 70px;
+            --card-height: 100px;
+        }
+
+        body {
+            margin: 0;
+            background-color: #1a1a2e;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        #game-container {
+            flex: 1;
+            display: grid;
+            grid-template-rows: 1fr 1fr;
+            /* 相手と自分 */
+            gap: 10px;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+
+        .player-area {
+            display: grid;
+            grid-template-columns: 150px 1fr 150px;
+            /* 墓地/山札 | メイン | シールド */
+            gap: 10px;
+        }
+
+        /* 相手のエリアは反転させる */
+        #opponent-area {
+            transform: rotate(0deg);
+            /* 必要なら 180度回すが、今は正面にする */
+        }
+
+        .zone {
+            background: var(--zone-bg);
+            border: 1px solid var(--zone-border);
+            border-radius: 5px;
+            padding: 5px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            min-height: 80px;
+            position: relative;
+        }
+
+        .zone-label {
+            position: absolute;
+            top: 2px;
+            right: 5px;
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.5);
+            pointer-events: none;
+        }
+
+        .main-battle-area {
+            display: grid;
+            grid-template-rows: 1fr 80px;
+            /* バトルゾーン | マナゾーン */
+            gap: 5px;
+        }
+
+        #hand-area {
+            height: 120px;
+            background: rgba(0, 0, 0, 0.3);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 10px;
+            gap: 5px;
+        }
+
+        .card {
+            width: var(--card-width);
+            height: var(--card-height);
+            background: #2c3e50;
+            border: 2px solid #ecf0f1;
+            border-radius: 4px;
+            cursor: grab;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 10px;
+            text-align: center;
+            user-select: none;
+            transition: transform 0.2s;
+        }
+
+        .card:hover {
+            transform: scale(1.05);
+            z-index: 10;
+        }
+
+        .card.tapped {
+            transform: rotate(90deg);
+        }
+
+        #ui-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px;
+            border-radius: 5px;
+        }
+
+        #status-log {
+            position: absolute;
+            bottom: 130px;
+            right: 10px;
+            width: 200px;
+            height: 100px;
+            background: rgba(0, 0, 0, 0.5);
+            font-size: 12px;
+            overflow-y: auto;
+            padding: 5px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="ui-overlay">
+        <div>Room: <span id="display-room">-</span></div>
+        <div>Status: <span id="display-status">Disconnected</span></div>
+        <button id="connect-btn">Connect</button>
+    </div>
+
+    <div id="game-container">
+        <!-- 相手のエリア -->
+        <div id="opponent-area" class="player-area">
+            <div class="side-zones">
+                <div class="zone" id="opp-deck">
+                    <div class="zone-label">DECK</div>
+                </div>
+                <div class="zone" id="opp-grave">
+                    <div class="zone-label">GRAVE</div>
+                </div>
+            </div>
+            <div class="main-battle-area">
+                <div class="zone" id="opp-battle">
+                    <div class="zone-label">BATTLE</div>
+                </div>
+                <div class="zone" id="opp-mana">
+                    <div class="zone-label">MANA</div>
+                </div>
+            </div>
+            <div class="zone" id="opp-shield">
+                <div class="zone-label">SHIELD</div>
+            </div>
+        </div>
+
+        <!-- 自分のエリア -->
+        <div id="self-area" class="player-area">
+            <div class="side-zones">
+                <div class="zone" id="self-deck">
+                    <div class="zone-label">DECK</div>
+                </div>
+                <div class="zone" id="self-grave">
+                    <div class="zone-label">GRAVE</div>
+                </div>
+            </div>
+            <div class="main-battle-area">
+                <div class="zone" id="self-battle">
+                    <div class="zone-label">BATTLE</div>
+                </div>
+                <div class="zone" id="self-mana">
+                    <div class="zone-label">MANA</div>
+                </div>
+            </div>
+            <div class="zone" id="self-shield">
+                <div class="zone-label">SHIELD</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 手札 -->
+    <div id="hand-area">
+        <!-- カードがここに並ぶ -->
+    </div>
+
+    <div id="status-log"></div>
+
+    <!-- SkyWay SDK Core -->
+    <script src="https://cdn.jsdelivr.net/npm/@skyway-sdk/core/dist/skyway_core.js"></script>
+    <script src="P2PManager.js"></script>
+    <script>
+        const { SkyWayContext, SkyWayRoom, SkyWayStreamFactory } = skyway_sdk;
+
+        // UI 要素
+        const logArea = document.getElementById('status-log');
+        const connectBtn = document.getElementById('connect-btn');
+        const statusText = document.getElementById('display-status');
+        const handArea = document.getElementById('hand-area');
+
+        function addLog(msg) {
+            const div = document.createElement('div');
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logArea.appendChild(div);
+            logArea.scrollTop = logArea.scrollHeight;
+        }
+
+        // --- P2P 管理 ---
+        let p2p = null;
+
+        connectBtn.onclick = async () => {
+            const roomName = prompt("Enter Room Name", "dmvault-room");
+            const memberName = prompt("Enter Your Name", "player" + Math.floor(Math.random() * 1000));
+
+            try {
+                addLog('認証トークンを取得中...');
+                const response = await fetch(`get_token.php?roomName=${roomName}`);
+                const data = await response.json();
+                if (data.error) throw new Error(data.error);
+
+                p2p = new P2PManager(null, data.authToken);
+                p2p.onConnected = () => {
+                    statusText.textContent = "Connected";
+                    addLog('SkyWay に接続しました');
+                    initGame(); // 接続後にゲーム開始
+                };
+                p2p.onMessageReceived = (data) => {
+                    const action = JSON.parse(data);
+                    handleRemoteAction(action);
+                };
+
+                await p2p.joinRoom(roomName, memberName);
+                document.getElementById('display-room').textContent = roomName;
+                connectBtn.disabled = true;
+            } catch (e) {
+                addLog('接続失敗: ' + e.message);
+            }
+        };
+
+        // --- ゲームロジック ---
+        let cards = {}; // cardId -> element
+
+        function initGame() {
+            // テスト用にカードを5枚生成
+            for (let i = 0; i < 5; i++) {
+                createCard(`card-${i}`, `Test Card ${i}`, 'hand-area');
+            }
+        }
+
+        function createCard(id, name, zoneId) {
+            const card = document.createElement('div');
+            card.id = id;
+            card.className = 'card';
+            card.textContent = name;
+            card.draggable = true;
+
+            // ドラッグ開始
+            card.ondragstart = (e) => {
+                e.dataTransfer.setData('text/plain', card.id);
+                e.dataTransfer.effectAllowed = 'move';
+            };
+
+            // ダブルクリックでタップ
+            card.ondblclick = () => {
+                card.classList.toggle('tapped');
+                sendAction('TAP_CARD', { cardId: card.id, tapped: card.classList.contains('tapped') });
+            };
+
+            const zone = document.getElementById(zoneId);
+            zone.appendChild(card);
+            cards[id] = card;
+        }
+
+        // ゾーンのドロップ設定
+        document.querySelectorAll('.zone, #hand-area').forEach(zone => {
+            zone.ondragover = (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+            };
+
+            zone.ondrop = (e) => {
+                e.preventDefault();
+                const cardId = e.dataTransfer.getData('text/plain');
+                const card = document.getElementById(cardId);
+
+                if (card && zone.id) {
+                    zone.appendChild(card);
+                    sendAction('MOVE_CARD', { cardId: cardId, toZone: zone.id });
+                }
+            };
+        });
+
+        function sendAction(type, payload) {
+            if (p2p) {
+                p2p.send(type, payload);
+            }
+        }
+
+        function handleRemoteAction(action) {
+            const { type, payload } = action;
+            addLog(`リモートアクション: ${type}`);
+
+            const card = cards[payload.cardId];
+            if (!card) return;
+
+            switch (type) {
+                case 'MOVE_CARD':
+                    // 相手の "self-area" は、こちらから見れば "opp-area" になる
+                    const targetZoneId = payload.toZone.replace('self', 'opp');
+                    const zone = document.getElementById(targetZoneId) || document.getElementById(payload.toZone);
+                    if (zone) zone.appendChild(card);
+                    break;
+                case 'TAP_CARD':
+                    if (payload.tapped) card.classList.add('tapped');
+                    else card.classList.remove('tapped');
+                    break;
+            }
+        }
+    </script>
+</body>
+
+</html>
