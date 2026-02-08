@@ -1,20 +1,37 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
     <meta charset="UTF-8">
     <title>WebRTC P2P Test</title>
     <style>
-        body { font-family: sans-serif; padding: 20px; }
-        #log { border: 1px solid #ccc; height: 200px; overflow-y: scroll; padding: 10px; margin-bottom: 10px; }
-        .controls { margin-bottom: 10px; }
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+        }
+
+        #log {
+            border: 1px solid #ccc;
+            height: 200px;
+            overflow-y: scroll;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        .controls {
+            margin-bottom: 10px;
+        }
     </style>
 </head>
+
 <body>
-    <h1>WebRTC P2P 通信テスト</h1>
-    
+    <h1>SkyWay P2P 通信テスト</h1>
+
     <div class="controls">
-        <label>Player ID: <input type="text" id="playerId" value="player1"></label>
-        <button id="startBtn">マッチング開始</button>
+        <label>Auth Token: <input type="password" id="authToken" placeholder="SkyWay Auth Token"></label><br>
+        <label>Room Name: <input type="text" id="roomName" value="dmvault-room"></label>
+        <label>Member Name: <input type="text" id="memberName" value="player1"></label>
+        <button id="startBtn">ルームに参加</button>
     </div>
 
     <div id="log"></div>
@@ -24,13 +41,20 @@
         <button id="sendBtn" disabled>送信</button>
     </div>
 
+    <!-- SkyWay SDK Core -->
+    <script src="https://cdn.jsdelivr.net/npm/@skyway-sdk/core/dist/skyway_core.js"></script>
     <script src="P2PManager.js"></script>
     <script>
+        const { SkyWayContext, SkyWayRoom, SkyWayStreamFactory } = skyway_sdk;
+
         const log = document.getElementById('log');
         const startBtn = document.getElementById('startBtn');
         const sendBtn = document.getElementById('sendBtn');
         const msgInput = document.getElementById('msgInput');
-        const playerIdInput = document.getElementById('playerId');
+
+        const tokenInput = document.getElementById('authToken');
+        const roomNameInput = document.getElementById('roomName');
+        const memberNameInput = document.getElementById('memberName');
 
         let p2p = null;
 
@@ -41,30 +65,38 @@
             log.scrollTop = log.scrollHeight;
         }
 
-        startBtn.onclick = () => {
-            const playerId = playerIdInput.value;
-            p2p = new P2PManager(playerId);
-            
-            // ログのオーバーライド
-            const originalOnMessage = p2p.onMessage;
-            p2p.onMessage = (data) => {
-                addLog(`受信: ${JSON.stringify(data)}`);
+        startBtn.onclick = async () => {
+            const token = tokenInput.value;
+            const roomName = roomNameInput.value;
+            const memberName = memberNameInput.value;
+
+            if (!token) {
+                alert('Auth Token を入力してください。');
+                return;
+            }
+
+            p2p = new P2PManager(null, token);
+
+            p2p.onConnected = () => {
+                addLog('SkyWay 接続完了。対戦相手を待っています...');
+                msgInput.disabled = false;
+                sendBtn.disabled = false;
             };
 
-            // 接続完了時の処理を簡易的にチェック
-            const checkDataChannel = setInterval(() => {
-                if (p2p.dataChannel && p2p.dataChannel.readyState === 'open') {
-                    addLog('P2P 接続が確立されました！');
-                    msgInput.disabled = false;
-                    sendBtn.disabled = false;
-                    clearInterval(checkDataChannel);
-                }
-            }, 1000);
+            p2p.onMessageReceived = (data) => {
+                addLog(`受信: ${data}`);
+            };
 
-            p2p.startMatching();
-            addLog(`${playerId} でマッチングを開始しました...`);
-            startBtn.disabled = true;
-            playerIdInput.disabled = true;
+            try {
+                addLog('接続中...');
+                await p2p.joinRoom(roomName, memberName);
+                startBtn.disabled = true;
+                tokenInput.disabled = true;
+                roomNameInput.disabled = true;
+                memberNameInput.disabled = true;
+            } catch (e) {
+                addLog(`エラー: ${e.message}`);
+            }
         };
 
         sendBtn.onclick = () => {
@@ -77,4 +109,5 @@
         };
     </script>
 </body>
+
 </html>
